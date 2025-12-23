@@ -30,65 +30,45 @@ const App: React.FC = () => {
     isFetching: false
   });
 
-  const fetchFinancialData = useCallback(async () => {
-    setMarketData(prev => ({ ...prev, isFetching: true }));
-    setErrorStatus(null);
+  const fetchFinancialData = useCallback(async (retryCount = 0) => {
+    if (retryCount === 0) {
+      setMarketData(prev => ({ ...prev, isFetching: true }));
+      setErrorStatus(null);
+    }
     
     try {
-      // 1. Fetch Crypto prices with fallback (Coingecko can be flaky on Netlify IPs)
+      // 1. Crypto Fetch (Independent)
       let cryptoResults = { bitcoin: { usd: 0 }, ethereum: { usd: 0 }, solana: { usd: 0 }, binancecoin: { usd: 0 }, tether: { usd: 1 } };
       try {
-        const cryptoRes = await fetch(
-          `https://api.coingecko.com/api/v3/simple/price?ids=${COIN_IDS.join(',')}&vs_currencies=usd`
-        );
-        if (cryptoRes.ok) {
-          cryptoResults = await cryptoRes.json();
-        }
-      } catch (ce) {
-        console.warn("Coingecko blocked/failed, using fallback placeholders", ce);
-      }
+        const cryptoRes = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${COIN_IDS.join(',')}&vs_currencies=usd`);
+        if (cryptoRes.ok) cryptoResults = await cryptoRes.json();
+      } catch (ce) { console.warn("Crypto Fallback Active"); }
 
-      // 2. Multi-Key Rotation Engine
+      // 2. Gemini AI Integration with Multi-Key Support
       const currentKey = getRotatingApiKey();
       const ai = new GoogleGenAI({ apiKey: currentKey });
       
-      const prompt = `CURRENT MARKET TASK: Find Tehran's Free Market Prices.
-      Return EXACTLY this JSON format (no other text):
-      {
-        "usd": "price in rials",
-        "eur": "price in rials",
-        "gbp": "price in rials",
-        "aed": "price in rials",
-        "gold18": "price per gram in rials",
-        "emami": "price per coin in rials",
-        "silver": "price per gram in rials",
-        "oil": "price in usd",
-        "tether_rial": "USDT rial rate"
-      }
-      Search sources: TGJU, Bonbast, or similar reputable Tehran market sources.`;
+      const promptText = `Find Tehran Market Prices. Format as JSON: {"usd": "val", "eur": "val", "gbp": "val", "aed": "val", "gold18": "val", "emami": "val", "silver": "val", "oil": "val", "tether_rial": "val"}. Use TGJU/Bonbast sources.`;
 
       const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview", // Flash is faster and more stable for search in SPA
-        contents: prompt,
+        model: "gemini-3-flash-preview",
+        contents: [{ parts: [{ text: promptText }] }],
         config: { 
           tools: [{ googleSearch: {} }]
         },
       });
 
-      // 3. Robust Parse
+      if (!response || !response.candidates || response.candidates.length === 0) {
+        throw new Error("No candidates returned from SHΞN™ core.");
+      }
+
       const responseText = response.text || "";
       const jsonMatch = responseText.match(/\{[\s\S]*\}/);
       
-      if (!jsonMatch) {
-        throw new Error("SHΞN™ Engine: Data extraction failed. Re-trying rotating key...");
-      }
+      if (!jsonMatch) throw new Error("JSON Parse Error: No block found.");
 
       const resultJson = JSON.parse(jsonMatch[0]);
-
-      const cleanNum = (val: any) => {
-        if (val === undefined || val === null) return '0';
-        return String(val).replace(/[^\d.]/g, '') || '0';
-      };
+      const cleanNum = (val: any) => String(val || '0').replace(/[^\d.]/g, '') || '0';
 
       const mappedCoins: CoinData[] = [
         { id: 'bitcoin', symbol: 'BTC', name: 'بیت‌کوین', price: cryptoResults.bitcoin?.usd || 0 },
@@ -98,48 +78,50 @@ const App: React.FC = () => {
         { id: 'tether', symbol: 'USDT', name: 'تتر (جهانی)', price: cryptoResults.tether?.usd || 1 },
       ];
 
-      const mappedFiats: FiatData[] = [
-        { id: 'usd', name: 'دلار آمریکا (آزاد)', symbol: 'USD', price: cleanNum(resultJson.usd) },
-        { id: 'eur', name: 'یورو', symbol: 'EUR', price: cleanNum(resultJson.eur) },
-        { id: 'gbp', name: 'پوند انگلیس', symbol: 'GBP', price: cleanNum(resultJson.gbp) },
-        { id: 'aed', name: 'درهم امارات', symbol: 'AED', price: cleanNum(resultJson.aed) },
-        { id: 'usdt_hidden', name: 'تتر داخلی', symbol: 'USDT', price: cleanNum(resultJson.tether_rial) },
-      ];
-
-      const mappedMetals: MetalData[] = [
-        { id: 'gold18', name: 'طلای ۱۸ عیار', unit: 'گرم', price: cleanNum(resultJson.gold18) },
-        { id: 'coin_emami', name: 'سکه امامی', unit: 'عدد', price: cleanNum(resultJson.emami) },
-        { id: 'silver', name: 'نقره خام', unit: 'گرم', price: cleanNum(resultJson.silver) },
-        { id: 'oil', name: 'نفت برنت', unit: 'بشکه (دلار)', price: cleanNum(resultJson.oil) },
-      ];
-
-      let newSources: GroundingSource[] = [];
-      const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
-      if (chunks) {
-        newSources = chunks
-          .filter(c => c.web)
-          .map(c => ({ title: c.web?.title || 'منبع معتبر بازار', uri: c.web?.uri || '#' }));
-      }
-
       setMarketData({
         coins: mappedCoins,
-        fiats: mappedFiats,
-        metals: mappedMetals,
+        fiats: [
+          { id: 'usd', name: 'دلار آمریکا (آزاد)', symbol: 'USD', price: cleanNum(resultJson.usd) },
+          { id: 'eur', name: 'یورو', symbol: 'EUR', price: cleanNum(resultJson.eur) },
+          { id: 'gbp', name: 'پوند انگلیس', symbol: 'GBP', price: cleanNum(resultJson.gbp) },
+          { id: 'aed', name: 'درهم امارات', symbol: 'AED', price: cleanNum(resultJson.aed) },
+          { id: 'usdt_hidden', name: 'تتر داخلی', symbol: 'USDT', price: cleanNum(resultJson.tether_rial) },
+        ],
+        metals: [
+          { id: 'gold18', name: 'طلای ۱۸ عیار', unit: 'گرم', price: cleanNum(resultJson.gold18) },
+          { id: 'coin_emami', name: 'سکه امامی', unit: 'عدد', price: cleanNum(resultJson.emami) },
+          { id: 'silver', name: 'نقره خام', unit: 'گرم', price: cleanNum(resultJson.silver) },
+          { id: 'oil', name: 'نفت برنت', unit: 'بشکه (دلار)', price: cleanNum(resultJson.oil) },
+        ],
         lastUpdated: new Date(),
-        sources: newSources,
+        sources: response.candidates[0].groundingMetadata?.groundingChunks
+          ?.filter(c => c.web)
+          .map(c => ({ title: c.web?.title || 'منبع معتبر', uri: c.web?.uri || '#' })) || [],
         isFetching: false
       });
     } catch (e: any) {
-      console.error("SHΞN™ Engine Critical Error:", e);
-      setErrorStatus("خطای سیستمی؛ لطفاً دوباره همگام‌سازی کنید.");
-      setMarketData(prev => ({ ...prev, isFetching: false }));
+      console.error(`Attempt ${retryCount + 1} Failed:`, e);
+      if (retryCount < 3) {
+        // Exponential backoff or immediate retry with new key
+        setTimeout(() => fetchFinancialData(retryCount + 1), 1000);
+      } else {
+        setErrorStatus("عدم پاسخگویی شبکه؛ لطفاً از ابزار تغییر آی‌پی (VPN) استفاده کنید.");
+        setMarketData(prev => ({ ...prev, isFetching: false }));
+      }
     }
   }, []);
 
   useEffect(() => {
-    if (!marketData.lastUpdated) fetchFinancialData();
+    // Initial fetch with a small delay for Netlify environment stabilization
+    const timer = setTimeout(() => {
+      if (!marketData.lastUpdated) fetchFinancialData();
+    }, 1500);
+    
     const interval = setInterval(fetchFinancialData, 1800000); 
-    return () => clearInterval(interval);
+    return () => {
+      clearTimeout(timer);
+      clearInterval(interval);
+    };
   }, [fetchFinancialData, marketData.lastUpdated]);
 
   useEffect(() => {
@@ -173,7 +155,7 @@ const App: React.FC = () => {
             <div className="flex items-center gap-1.5 mt-0.5">
                <Activity className={`w-3 h-3 ${marketData.isFetching ? 'text-amber-500' : 'text-emerald-500'} animate-pulse`} />
                <span className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">
-                 {marketData.isFetching ? 'Engine: Rotating Keys...' : 'Market Core: Online'}
+                 {marketData.isFetching ? 'Protocol: Safe-Sync Active' : 'Market Core: Online'}
                </span>
             </div>
           </div>
@@ -181,7 +163,7 @@ const App: React.FC = () => {
       </header>
 
       {errorStatus && (
-        <div className="w-full max-w-lg mb-4 p-4 bg-red-500/10 border border-red-500/20 rounded-2xl flex items-center gap-3 animate-bounce">
+        <div className="w-full max-w-lg mb-4 p-4 bg-red-500/10 border border-red-500/20 rounded-2xl flex items-center gap-3 animate-in fade-in slide-in-from-top-2">
             <AlertCircle className="w-5 h-5 text-red-500" />
             <span className="text-xs font-bold text-red-400">{errorStatus}</span>
         </div>
@@ -200,7 +182,7 @@ const App: React.FC = () => {
               }`}
             >
               {isActive && (
-                <div className="absolute inset-0 bg-indigo-600 shadow-lg shadow-indigo-600/20 animate-in fade-in zoom-in-95 duration-300"></div>
+                <div className="absolute inset-0 bg-indigo-600 shadow-lg shadow-indigo-600/20"></div>
               )}
               <Icon className={`w-4 h-4 relative z-10 ${isActive ? 'text-white' : ''}`} />
               <span className="text-xs font-black relative z-10">{tab.label}</span>
@@ -224,12 +206,7 @@ const App: React.FC = () => {
         )}
         {activeTab === 'satna' && <SatnaDashboard />}
         {activeTab === 'chakavak' && <ChakavakDashboard />}
-        {activeTab === 'market' && (
-          <MarketDashboard 
-            data={marketData} 
-            onRefresh={fetchFinancialData} 
-          />
-        )}
+        {activeTab === 'market' && <MarketDashboard data={marketData} onRefresh={() => fetchFinancialData(0)} />}
       </main>
 
       <footer className="mt-auto py-10 text-center">
