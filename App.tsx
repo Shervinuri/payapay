@@ -7,7 +7,7 @@ import { SatnaDashboard } from './components/SatnaDashboard';
 import { ChakavakDashboard } from './components/ChakavakDashboard';
 import { MarketDashboard } from './components/MarketDashboard';
 import { calculateNextCycle, calculateTimeRemaining, calculateProgress } from './utils/timeHelpers';
-import { Wallet, Activity, Repeat, Zap, FileText, LayoutGrid } from 'lucide-react';
+import { Wallet, Activity, Repeat, Zap, FileText, LayoutGrid, AlertCircle } from 'lucide-react';
 import { AppTab, FinancialState, CoinData, GroundingSource, FiatData, MetalData } from './types';
 import { GoogleGenAI } from "@google/genai";
 import { getRotatingApiKey } from './utils/apiManager';
@@ -19,6 +19,7 @@ const App: React.FC = () => {
   const [calculation, setCalculation] = useState(calculateNextCycle());
   const [timeRemaining, setTimeRemaining] = useState(calculateTimeRemaining(calculation.targetDate));
   const [progress, setProgress] = useState(0);
+  const [errorStatus, setErrorStatus] = useState<string | null>(null);
 
   const [marketData, setMarketData] = useState<FinancialState>({
     coins: [],
@@ -31,62 +32,70 @@ const App: React.FC = () => {
 
   const fetchFinancialData = useCallback(async () => {
     setMarketData(prev => ({ ...prev, isFetching: true }));
+    setErrorStatus(null);
     
     try {
-      // 1. Fetch Crypto prices from public API (Parallel)
-      const cryptoPromise = fetch(
-        `https://api.coingecko.com/api/v3/simple/price?ids=${COIN_IDS.join(',')}&vs_currencies=usd`
-      ).then(r => r.json());
+      // 1. Fetch Crypto prices with fallback (Coingecko can be flaky on Netlify IPs)
+      let cryptoResults = { bitcoin: { usd: 0 }, ethereum: { usd: 0 }, solana: { usd: 0 }, binancecoin: { usd: 0 }, tether: { usd: 1 } };
+      try {
+        const cryptoRes = await fetch(
+          `https://api.coingecko.com/api/v3/simple/price?ids=${COIN_IDS.join(',')}&vs_currencies=usd`
+        );
+        if (cryptoRes.ok) {
+          cryptoResults = await cryptoRes.json();
+        }
+      } catch (ce) {
+        console.warn("Coingecko blocked/failed, using fallback placeholders", ce);
+      }
 
-      // 2. Fetch Fiat and Metals using Gemini with Hardcoded Key Rotation
+      // 2. Multi-Key Rotation Engine
       const currentKey = getRotatingApiKey();
       const ai = new GoogleGenAI({ apiKey: currentKey });
       
-      const prompt = `Find and return current market prices in Tehran/Iran. 
-      Format your response as a valid JSON block containing these fields:
-      "usd": (Price of Free Market USD in Rials),
-      "eur": (Price of EUR in Rials),
-      "gbp": (Price of British Pound in Rials),
-      "aed": (Price of UAE Dirham in Rials),
-      "gold18": (Price of 18k Gold per gram in Rials),
-      "emami": (Price of Emami Gold Coin in Rials),
-      "silver": (Price of 999 Silver per gram in Rials),
-      "oil": (Price of Brent Crude Oil in USD),
-      "tether": (Internal Rial rate for USDT in Iran).
-      Use Bonbast or TGJU as sources. Return ONLY the JSON block.`;
+      const prompt = `CURRENT MARKET TASK: Find Tehran's Free Market Prices.
+      Return EXACTLY this JSON format (no other text):
+      {
+        "usd": "price in rials",
+        "eur": "price in rials",
+        "gbp": "price in rials",
+        "aed": "price in rials",
+        "gold18": "price per gram in rials",
+        "emami": "price per coin in rials",
+        "silver": "price per gram in rials",
+        "oil": "price in usd",
+        "tether_rial": "USDT rial rate"
+      }
+      Search sources: TGJU, Bonbast, or similar reputable Tehran market sources.`;
 
       const response = await ai.models.generateContent({
-        model: "gemini-3-pro-preview", // Higher accuracy for complex search & extraction
+        model: "gemini-3-flash-preview", // Flash is faster and more stable for search in SPA
         contents: prompt,
         config: { 
           tools: [{ googleSearch: {} }]
         },
       });
 
-      const coinJson = await cryptoPromise;
-      
-      // Robust Extraction: Find JSON block within response text
+      // 3. Robust Parse
       const responseText = response.text || "";
       const jsonMatch = responseText.match(/\{[\s\S]*\}/);
       
       if (!jsonMatch) {
-        throw new Error("SHΞN™ Protocol: Could not extract valid market JSON from model response.");
+        throw new Error("SHΞN™ Engine: Data extraction failed. Re-trying rotating key...");
       }
 
       const resultJson = JSON.parse(jsonMatch[0]);
 
       const cleanNum = (val: any) => {
         if (val === undefined || val === null) return '0';
-        const str = String(val).replace(/[^\d.]/g, '');
-        return str || '0';
+        return String(val).replace(/[^\d.]/g, '') || '0';
       };
 
       const mappedCoins: CoinData[] = [
-        { id: 'bitcoin', symbol: 'BTC', name: 'بیت‌کوین', price: coinJson.bitcoin.usd },
-        { id: 'ethereum', symbol: 'ETH', name: 'اتریوم', price: coinJson.ethereum.usd },
-        { id: 'solana', symbol: 'SOL', name: 'سولانا', price: coinJson.solana.usd },
-        { id: 'binancecoin', symbol: 'BNB', name: 'بایننس‌کوین', price: coinJson.binancecoin.usd },
-        { id: 'tether', symbol: 'USDT', name: 'تتر (جهانی)', price: coinJson.tether.usd },
+        { id: 'bitcoin', symbol: 'BTC', name: 'بیت‌کوین', price: cryptoResults.bitcoin?.usd || 0 },
+        { id: 'ethereum', symbol: 'ETH', name: 'اتریوم', price: cryptoResults.ethereum?.usd || 0 },
+        { id: 'solana', symbol: 'SOL', name: 'سولانا', price: cryptoResults.solana?.usd || 0 },
+        { id: 'binancecoin', symbol: 'BNB', name: 'بایننس‌کوین', price: cryptoResults.binancecoin?.usd || 0 },
+        { id: 'tether', symbol: 'USDT', name: 'تتر (جهانی)', price: cryptoResults.tether?.usd || 1 },
       ];
 
       const mappedFiats: FiatData[] = [
@@ -94,7 +103,7 @@ const App: React.FC = () => {
         { id: 'eur', name: 'یورو', symbol: 'EUR', price: cleanNum(resultJson.eur) },
         { id: 'gbp', name: 'پوند انگلیس', symbol: 'GBP', price: cleanNum(resultJson.gbp) },
         { id: 'aed', name: 'درهم امارات', symbol: 'AED', price: cleanNum(resultJson.aed) },
-        { id: 'usdt_hidden', name: 'تتر داخلی', symbol: 'USDT', price: cleanNum(resultJson.tether) },
+        { id: 'usdt_hidden', name: 'تتر داخلی', symbol: 'USDT', price: cleanNum(resultJson.tether_rial) },
       ];
 
       const mappedMetals: MetalData[] = [
@@ -109,7 +118,7 @@ const App: React.FC = () => {
       if (chunks) {
         newSources = chunks
           .filter(c => c.web)
-          .map(c => ({ title: c.web?.title || 'مرجع اطلاعاتی SHΞN™', uri: c.web?.uri || '#' }));
+          .map(c => ({ title: c.web?.title || 'منبع معتبر بازار', uri: c.web?.uri || '#' }));
       }
 
       setMarketData({
@@ -120,15 +129,16 @@ const App: React.FC = () => {
         sources: newSources,
         isFetching: false
       });
-    } catch (e) {
-      console.error("SHΞN™ Engine Critical Failure:", e);
+    } catch (e: any) {
+      console.error("SHΞN™ Engine Critical Error:", e);
+      setErrorStatus("خطای سیستمی؛ لطفاً دوباره همگام‌سازی کنید.");
       setMarketData(prev => ({ ...prev, isFetching: false }));
     }
   }, []);
 
   useEffect(() => {
     if (!marketData.lastUpdated) fetchFinancialData();
-    const interval = setInterval(fetchFinancialData, 1800000); // 30 mins auto
+    const interval = setInterval(fetchFinancialData, 1800000); 
     return () => clearInterval(interval);
   }, [fetchFinancialData, marketData.lastUpdated]);
 
@@ -163,12 +173,19 @@ const App: React.FC = () => {
             <div className="flex items-center gap-1.5 mt-0.5">
                <Activity className={`w-3 h-3 ${marketData.isFetching ? 'text-amber-500' : 'text-emerald-500'} animate-pulse`} />
                <span className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">
-                 {marketData.isFetching ? 'Key Rotation Active...' : 'Market Core: Online'}
+                 {marketData.isFetching ? 'Engine: Rotating Keys...' : 'Market Core: Online'}
                </span>
             </div>
           </div>
         </div>
       </header>
+
+      {errorStatus && (
+        <div className="w-full max-w-lg mb-4 p-4 bg-red-500/10 border border-red-500/20 rounded-2xl flex items-center gap-3 animate-bounce">
+            <AlertCircle className="w-5 h-5 text-red-500" />
+            <span className="text-xs font-bold text-red-400">{errorStatus}</span>
+        </div>
+      )}
 
       <nav className="w-full max-w-lg mb-6 p-1 bg-white/5 border border-white/5 rounded-2xl flex items-center gap-1 backdrop-blur-xl">
         {tabs.map((tab) => {
