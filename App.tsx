@@ -77,7 +77,6 @@ const App: React.FC = () => {
         { id: 'tether', symbol: 'USDT', name: 'تتر (جهانی)', price: coinJson.tether.usd },
       ];
 
-      // Store tether internal rate separately but keep it out of the displayed fiats list as requested
       const internalTetherRate = cleanNum(resultJson.tether);
 
       const mappedFiats: FiatData[] = [
