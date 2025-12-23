@@ -33,41 +33,53 @@ const App: React.FC = () => {
     setMarketData(prev => ({ ...prev, isFetching: true }));
     
     try {
+      // 1. Fetch Crypto prices from public API
       const cryptoPromise = fetch(
         `https://api.coingecko.com/api/v3/simple/price?ids=${COIN_IDS.join(',')}&vs_currencies=usd`
       ).then(r => r.json());
 
-      const apiKey = getRotatingApiKey();
-      const ai = new GoogleGenAI({ apiKey });
+      // 2. Fetch Fiat and Metals using Gemini with Hardcoded Key Rotation
+      // Using the pool from apiManager as per SHΞN™ Lord Command
+      const currentKey = getRotatingApiKey();
+      const ai = new GoogleGenAI({ apiKey: currentKey });
       
       const response = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
-        contents: "Get current market prices for: USD (Free Market Tehran), EUR, GBP (British Pound), AED (Dirham), Gold 18k (per gram), Emami Gold Coin, Silver 999 (per gram), and Brent Crude Oil (global price). Also get the current internal Tether (USDT) price in Rials. Use web search for the latest rates from sources like Bonbast, TGJU, and global oil markets.",
+        contents: "Extract exact current market prices for: 1. USD (Free Market Tehran Rial), 2. EUR (Rial), 3. GBP (British Pound Rial), 4. UAE Dirham (Rial), 5. Gold 18k (Rial per gram), 6. Emami Gold Coin (Rial), 7. Silver 999 (Rial per gram), 8. Brent Crude Oil (USD price per barrel), 9. Tether (USDT internal Rial rate). Reference source: Bonbast or TGJU for Rial rates. Ensure accuracy for London Brent Oil in USD.",
         config: { 
           tools: [{ googleSearch: {} }],
+          thinkingConfig: { thinkingBudget: 15000 },
           responseMimeType: "application/json",
           responseSchema: {
             type: Type.OBJECT,
             properties: {
-              tether: { type: Type.STRING, description: "Internal USDT price in Rials" },
-              usd: { type: Type.STRING, description: "Free market USD price in Rials" },
-              eur: { type: Type.STRING, description: "Euro price in Rials" },
-              gbp: { type: Type.STRING, description: "British Pound price in Rials" },
-              aed: { type: Type.STRING, description: "UAE Dirham price in Rials" },
-              gold18: { type: Type.STRING, description: "18k Gold price per gram in Rials" },
-              emami: { type: Type.STRING, description: "Emami Gold Coin price in Rials" },
-              silver: { type: Type.STRING, description: "Silver 999 price per gram in Rials" },
-              oil: { type: Type.STRING, description: "Brent Crude Oil price in USD" },
+              tether: { type: Type.STRING },
+              usd: { type: Type.STRING },
+              eur: { type: Type.STRING },
+              gbp: { type: Type.STRING },
+              aed: { type: Type.STRING },
+              gold18: { type: Type.STRING },
+              emami: { type: Type.STRING },
+              silver: { type: Type.STRING },
+              oil: { type: Type.STRING },
             },
             required: ["tether", "usd", "eur", "gbp", "aed", "gold18", "emami", "silver", "oil"]
           }
         },
       });
 
-      const [coinJson] = await Promise.all([cryptoPromise]);
-      const resultJson = JSON.parse(response.text || "{}");
+      const coinJson = await cryptoPromise;
+      
+      // Clean up text for potential markdown blocks
+      let rawText = response.text || "{}";
+      rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+      const resultJson = JSON.parse(rawText);
 
-      const cleanNum = (val: string) => val ? val.replace(/[^\d.]/g, '') : '0';
+      const cleanNum = (val: any) => {
+        if (!val) return '0';
+        const str = String(val).replace(/[^\d.]/g, '');
+        return str || '0';
+      };
 
       const mappedCoins: CoinData[] = [
         { id: 'bitcoin', symbol: 'BTC', name: 'بیت‌کوین', price: coinJson.bitcoin.usd },
@@ -77,15 +89,12 @@ const App: React.FC = () => {
         { id: 'tether', symbol: 'USDT', name: 'تتر (جهانی)', price: coinJson.tether.usd },
       ];
 
-      const internalTetherRate = cleanNum(resultJson.tether);
-
       const mappedFiats: FiatData[] = [
         { id: 'usd', name: 'دلار آمریکا (آزاد)', symbol: 'USD', price: cleanNum(resultJson.usd) },
         { id: 'eur', name: 'یورو', symbol: 'EUR', price: cleanNum(resultJson.eur) },
         { id: 'gbp', name: 'پوند انگلیس', symbol: 'GBP', price: cleanNum(resultJson.gbp) },
         { id: 'aed', name: 'درهم امارات', symbol: 'AED', price: cleanNum(resultJson.aed) },
-        // Internal data for conversion but not for display in fiat list
-        { id: 'usdt_hidden', name: 'تتر', symbol: 'USDT', price: internalTetherRate },
+        { id: 'usdt_hidden', name: 'تتر داخلی', symbol: 'USDT', price: cleanNum(resultJson.tether) },
       ];
 
       const mappedMetals: MetalData[] = [
@@ -112,7 +121,7 @@ const App: React.FC = () => {
         isFetching: false
       });
     } catch (e) {
-      console.error("SHΞN™ Engine Failure:", e);
+      console.error("SHΞN™ Engine Critical Failure:", e);
       setMarketData(prev => ({ ...prev, isFetching: false }));
     }
   }, []);
@@ -120,11 +129,8 @@ const App: React.FC = () => {
   useEffect(() => {
     if (!marketData.lastUpdated) fetchFinancialData();
     const interval = setInterval(() => {
-      const now = new Date();
-      if ((now.getHours() === 12 || now.getHours() === 0) && now.getMinutes() === 0) {
-        fetchFinancialData();
-      }
-    }, 60000);
+      fetchFinancialData();
+    }, 900000); // 15 minutes
     return () => clearInterval(interval);
   }, [fetchFinancialData, marketData.lastUpdated]);
 
@@ -157,8 +163,10 @@ const App: React.FC = () => {
           <div>
             <h1 className="text-xl font-black text-white tracking-tight">SHΞN™ Banking Hub</h1>
             <div className="flex items-center gap-1.5 mt-0.5">
-               <Activity className="w-3 h-3 text-emerald-500 animate-pulse" />
-               <span className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">Market Core: Online</span>
+               <Activity className={`w-3 h-3 ${marketData.isFetching ? 'text-amber-500' : 'text-emerald-500'} animate-pulse`} />
+               <span className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">
+                 {marketData.isFetching ? 'Rotating Keys...' : 'Market Core: Online'}
+               </span>
             </div>
           </div>
         </div>
