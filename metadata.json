@@ -1,0 +1,5 @@
+{
+  "name": "Paya Countdown Timer",
+  "description": "A countdown timer for Iran's Paya payment settlement cycles.",
+  "requestFramePermissions": []
+}
