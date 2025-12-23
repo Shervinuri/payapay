@@ -1,5 +1,5 @@
 /**
- * SHΞN™ API Key Manager - High Availability Edition
+ * SHΞN™ API Key Manager - Phantom Edition
  */
 
 const GEMINI_KEYS = [
@@ -35,29 +35,31 @@ const GEMINI_KEYS = [
   "AIzaSyCMJASvij_Ai2HfU1Sa8nQeV3-vyoDmV5o"
 ];
 
-// Use localStorage to persist rotation index across refreshes if possible
-const getStartIndex = () => {
-  try {
-    const saved = localStorage.getItem('shen_api_idx');
-    return saved ? parseInt(saved, 10) : Math.floor(Math.random() * GEMINI_KEYS.length);
-  } catch {
-    return Math.floor(Math.random() * GEMINI_KEYS.length);
+let blacklistedIndices = new Set<number>();
+let currentIndex = Math.floor(Math.random() * GEMINI_KEYS.length);
+
+export const getRotatingApiKey = (): { key: string, index: number } => {
+  // Find next non-blacklisted key
+  let attempts = 0;
+  while (blacklistedIndices.has(currentIndex) && attempts < GEMINI_KEYS.length) {
+    currentIndex = (currentIndex + 1) % GEMINI_KEYS.length;
+    attempts++;
   }
-};
+  
+  // If all blacklisted (unlikely), reset one
+  if (attempts >= GEMINI_KEYS.length) {
+    blacklistedIndices.clear();
+  }
 
-let currentIndex = getStartIndex();
-
-export const getRotatingApiKey = (): string => {
   const key = GEMINI_KEYS[currentIndex];
+  const activeIdx = currentIndex;
   currentIndex = (currentIndex + 1) % GEMINI_KEYS.length;
-  try { localStorage.setItem('shen_api_idx', currentIndex.toString()); } catch {}
-  return key;
+  return { key, index: activeIdx };
 };
 
-export const getMultipleKeys = (count: number): string[] => {
-  const keys: string[] = [];
-  for (let i = 0; i < count; i++) {
-    keys.push(getRotatingApiKey());
-  }
-  return keys;
+export const blacklistKey = (index: number) => {
+  blacklistedIndices.add(index);
+  console.warn(`SHΞN™: Key at index ${index} blacklisted due to error.`);
 };
+
+export const getBlacklistCount = () => blacklistedIndices.size;
